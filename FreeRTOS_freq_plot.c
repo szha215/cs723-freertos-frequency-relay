@@ -75,7 +75,9 @@ double freq_threshold = 49.0;
 double roc_threshold = 10.0;
 double freq[100];
 double dfreq[100];
-int freq_index = 99; //Points to oldest Data
+int freq_index = 99;  // Points to oldest (first) data
+TickType_t start_time;
+TickType_t time_taken;
 
 typedef struct{
 	unsigned int x1;
@@ -90,6 +92,7 @@ void freq_relay(){
 	#define SAMPLING_FREQ 16000.0
 	double temp = SAMPLING_FREQ/(double)IORD(FREQUENCY_ANALYSER_BASE, 0);
 
+	start_time = xTaskGetTickCountFromISR();
 	xQueueSendToBackFromISR( Q_freq_data, &temp, pdFALSE );
 
 	return;
@@ -160,7 +163,7 @@ void freq_update_task()
 			dfreq[freq_index] = 100.0;
 		}
 
-		freq_index = (++freq_index) % 100; //point to the next data (oldest) to be overwritten
+		freq_index = (++freq_index) % 100;  // point to the next data (oldest) to be overwritten
 		xSemaphoreGive(freq_roc_sem);
 	}
 }
@@ -421,6 +424,8 @@ void load_control_task(){
 					switch(req)
 					{
 					case DISCONNECT:
+						time_taken = xTaskGetTickCount() - start_time;
+
 						for (i = 0; i < 5; i++){
 							if(red_led & (1 << i)){
 								IOWR_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE, red_led & ~(1 << i));
@@ -468,7 +473,7 @@ void load_control_task(){
 
 		}
 
-		vTaskDelay(50);
+		vTaskDelay(5);
 	}
 }
 
@@ -514,24 +519,31 @@ void PRVGADraw_Task(void *pvParameters ){
 	alt_up_char_buffer_string(char_buf, "-30", 9, 34);
 	alt_up_char_buffer_string(char_buf, "-60", 9, 36);
 
-	alt_up_char_buffer_string(char_buf, "Frequency Threshold (Hz) =       (UP/DOWN arrow keys)", 12, 40);  // 40
-	alt_up_char_buffer_string(char_buf, "RoC Threshold (Hz/s)     =       (LEFT/RIGHT arrow keys)", 12, 42);
+	alt_up_char_buffer_string(char_buf, "Total run time (sec)     = ", 12, 40);
+	alt_up_char_buffer_string(char_buf, "Frequency Threshold (Hz) =       (UP/DOWN arrow keys)", 12, 42);  // 40
+	alt_up_char_buffer_string(char_buf, "RoC Threshold (Hz/s)     =       (LEFT/RIGHT arrow keys)", 12, 44);
+	alt_up_char_buffer_string(char_buf, "Time taken to shed (ms)  = ", 12, 46);
+
 
 	int j = 0;
 	Line line_freq, line_roc;
 
-	char freq_buf[5];
+	char temp_buf[6];
 
 	while(1){
 
+		sprintf(temp_buf, "%5.1f", (double) xTaskGetTickCount() / 1000.0);
+		alt_up_char_buffer_string(char_buf, temp_buf, 39, 40);
+
 		// Read thresholds and print to screen
 		xSemaphoreTake(threshold_sem, (TickType_t ) 10);
-		sprintf(freq_buf, "%2.1f", freq_threshold);
-		alt_up_char_buffer_string(char_buf, freq_buf, 40, 40);
-		sprintf(freq_buf, "%2.1f", roc_threshold);
+		sprintf(temp_buf, "%2.1f", freq_threshold);
+		alt_up_char_buffer_string(char_buf, temp_buf, 40, 42);
+		sprintf(temp_buf, "%2.1f", roc_threshold);
 		xSemaphoreGive(threshold_sem);
-		alt_up_char_buffer_string(char_buf, freq_buf, 40, 42);
-
+		alt_up_char_buffer_string(char_buf, temp_buf, 40, 44);
+		sprintf(temp_buf, "%2d", time_taken);
+		alt_up_char_buffer_string(char_buf, temp_buf, 40, 46);
 
 
 		//clear old graph to draw new graph
