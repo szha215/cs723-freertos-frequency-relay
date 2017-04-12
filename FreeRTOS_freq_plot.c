@@ -60,6 +60,7 @@ SemaphoreHandle_t threshold_sem;  // for r/w thresholds
 SemaphoreHandle_t all_connected_sem;  // for all_connected flag
 SemaphoreHandle_t load_mngr_idle_sem;  // task blocker 
 SemaphoreHandle_t freq_roc_sem;  // For freq[100], dfreq[100] and freq_index
+SemaphoreHandle_t reaction_time_sem;  // for time_taken[5], max_time, min_time, avg_time
 
 
 // global
@@ -83,6 +84,10 @@ TickType_t time_stamps[100];
 TickType_t start_time;
 int shed_index;
 TickType_t time_taken[5];
+TickType_t max_time = 0;
+TickType_t min_time = 99;
+TickType_t avg_time = 0;
+
 
 typedef struct{
 	unsigned int x1;
@@ -488,8 +493,29 @@ void load_control_task(){
 								// 	xSemaphoreGive(all_connected_sem);
 								// }
 
+								//  update reaction time data
+								xSemaphoreTake(reaction_time_sem, 10);
 								time_taken[k] = xTaskGetTickCount() - time_stamps[shed_index];
+
+								if(time_taken[k] < min_time) {
+									min_time = time_taken[k];
+								}
+
+								if(time_taken[k] > max_time) {
+									max_time = time_taken[k];
+								}
+
+								avg_time = 0;
+
+								for(i = 0; i < 5; i++) {
+									avg_time += time_taken[i];
+								}
+
+								avg_time /= 5;
+
+								xSemaphoreGive(reaction_time_sem);
 								k = (++k) % 5;
+
 								break;
 							}
 						}
@@ -538,8 +564,6 @@ void load_control_task(){
 /****** VGA display ******/
 // Task
 void PRVGADraw_Task(void *pvParameters ){
-
-
 	//initialize VGA controllers
 	alt_up_pixel_buffer_dma_dev *pixel_buf;
 	pixel_buf = alt_up_pixel_buffer_dma_open_dev(VIDEO_PIXEL_BUFFER_DMA_NAME);
@@ -580,20 +604,24 @@ void PRVGADraw_Task(void *pvParameters ){
 	alt_up_char_buffer_string(char_buf, "Frequency Threshold (Hz) =       (UP/DOWN arrow keys)", 12, 42);  // 40
 	alt_up_char_buffer_string(char_buf, "RoC Threshold (Hz/s)     =       (LEFT/RIGHT arrow keys)", 12, 44);
 	alt_up_char_buffer_string(char_buf, "Time taken to shed (ms)  = ", 12, 46);
-
+	alt_up_char_buffer_string(char_buf, "Max time to shed (ms)    = ", 12, 48);
+	alt_up_char_buffer_string(char_buf, "Min time to shed (ms)    = ", 12, 50);
+	alt_up_char_buffer_string(char_buf, "Avg time to shed (ms)    = ", 12, 52);
 
 
 	int j = 0;
-	int k = 0;
 	Line line_freq, line_roc;
 
 	char temp_buf[6];
 	unsigned int milisec;
 
+	const TickType_t task_period = 33;  // 60 Hz
+	TickType_t last_wake_time = xTaskGetTickCount();
+
 	while(1){
 
+		vTaskDelayUntil(&last_wake_time, task_period);
 		milisec = xTaskGetTickCount();
-
 
 		sprintf(temp_buf, "%02d:%02d:%02d.%1d", (milisec/3600000) % 24, (milisec/60000) % 60, (milisec/1000) % 60, (milisec/100) % 10);
 		alt_up_char_buffer_string(char_buf, temp_buf, 40, 40);
@@ -606,9 +634,19 @@ void PRVGADraw_Task(void *pvParameters ){
 		xSemaphoreGive(threshold_sem);
 		alt_up_char_buffer_string(char_buf, temp_buf, 40, 44);
 
+		xSemaphoreTake(reaction_time_sem, 10);
 		sprintf(temp_buf, "%2d, %2d, %2d, %2d, %2d", time_taken[4], time_taken[3], time_taken[2], time_taken[1], time_taken[0]);
 		alt_up_char_buffer_string(char_buf, temp_buf, 40, 46);
 
+		sprintf(temp_buf, "%2d", max_time);
+		alt_up_char_buffer_string(char_buf, temp_buf, 40, 48);
+
+		sprintf(temp_buf, "%2d", min_time);
+		alt_up_char_buffer_string(char_buf, temp_buf, 40, 50);
+
+		sprintf(temp_buf, "%2d", avg_time);
+		alt_up_char_buffer_string(char_buf, temp_buf, 40, 52);
+		xSemaphoreGive(reaction_time_sem);
 
 
 		//clear old graph to draw new graph
@@ -639,7 +677,7 @@ void PRVGADraw_Task(void *pvParameters ){
 			}
 		}
 //		xSemaphoreGive(freq_roc_sem);
-		vTaskDelay(10);
+//		vTaskDelay(10);
 
 	}
 }
@@ -668,11 +706,13 @@ int main()
 	all_connected_sem = xSemaphoreCreateBinary();
 	load_mngr_idle_sem = xSemaphoreCreateBinary();
 	freq_roc_sem = xSemaphoreCreateBinary();
+	reaction_time_sem = xSemaphoreCreateBinary();
 
 	xSemaphoreGive(threshold_sem);
 	xSemaphoreGive(all_connected_sem);
 	xSemaphoreGive(load_mngr_idle_sem);
 	xSemaphoreGive(freq_roc_sem);
+	xSemaphoreGive(reaction_time_sem);
 
 	// Hardware initialisation
 	// Initialise ps2 device
