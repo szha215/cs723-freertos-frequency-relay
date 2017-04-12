@@ -33,8 +33,9 @@ typedef enum request {CONNECT, DISCONNECT} Request;
 
 #define MIN_FREQ 45.0 //minimum frequency to draw
 
-#define FREQ_THRESHOLD_INC_AMOUNT 0.5
-#define FREQ_THRESHOLD_INC_AMOUNT_P 0.1
+#define FREQ_THRESHOLD_INC_AMOUNT 0.5  // amount of threshold (Hz) to increment/decrement
+#define FREQ_THRESHOLD_INC_AMOUNT_P 0.1  // when precise_increment flag is high
+
 #define ROC_THRESHOLD_INC_AMOUNT 1
 #define ROC_THRESHOLD_INC_AMOUNT_P 0.2
 
@@ -55,9 +56,9 @@ TaskHandle_t idle_task_handle;
 TimerHandle_t timer;
 
 // Semaphores
-SemaphoreHandle_t threshold_sem;
-SemaphoreHandle_t all_connected_sem;
-SemaphoreHandle_t load_mngr_idle_sem;
+SemaphoreHandle_t threshold_sem;  // for r/w thresholds
+SemaphoreHandle_t all_connected_sem;  // for all_connected flag
+SemaphoreHandle_t load_mngr_idle_sem;  // task blocker 
 SemaphoreHandle_t freq_roc_sem;  // For freq[100], dfreq[100] and freq_index
 
 
@@ -68,14 +69,14 @@ static QueueHandle_t Q_load_request;
 
 volatile unsigned char maintenance_mode = 0;
 volatile unsigned char precise_increment = 0;
-unsigned char all_connected = 0;
 volatile unsigned char timer_expired = 0;
+unsigned char all_connected = 0;
 
-double freq_threshold = 49.0;
+double freq_threshold = 49.5;
 double roc_threshold = 10.0;
 double freq[100];
 double dfreq[100];
-int freq_index = 99;  // Points to oldest (first) data
+int freq_index = 99; 
 TickType_t start_time;
 TickType_t time_taken;
 
@@ -98,14 +99,14 @@ void freq_relay(){
 	return;
 }
 
-//button_isr - Set maintenance mode and LED
+// button_isr - Toggle maintenance mode and threshold precision
 void button_isr(void* context, alt_u32 id){
 	if (IORD_ALTERA_AVALON_PIO_EDGE_CAP(PUSH_BUTTON_BASE) == 4){
 		// toggle
 		maintenance_mode ^= 1;
-
 		// set maintenance LED
-		IOWR(RED_LEDS_BASE, 0, 0 | (IORD_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE) & 0x0FFFFFFF ) | maintenance_mode << 17);
+		// IOWR(RED_LEDS_BASE, 0, 0 | (IORD_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE) & 0x0FFFFFFF ) | maintenance_mode << 17);
+
 	} else if (IORD_ALTERA_AVALON_PIO_EDGE_CAP(PUSH_BUTTON_BASE) == 2){
 		precise_increment ^= 1;
 	}
@@ -377,7 +378,13 @@ void load_control_task(){
 	unsigned int red_led, green_led;
 	Request req;
 
+	const TickType_t task_period = 100;
+	TickType_t last_wake_time = xTaskGetTickCount();
+
 	while(1){
+
+		vTaskDelayUntil(&last_wake_time, task_period);
+
 		// read the value of the switch and store to uiSwitchValue
 		uiSwitchValue = IORD_ALTERA_AVALON_PIO_DATA(SLIDE_SWITCH_BASE);
 
@@ -386,26 +393,35 @@ void load_control_task(){
 			IOWR_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE, (uiSwitchValue & 0x1F) | maintenance_mode << 17);
 			IOWR_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE, 0);
 
+			xQueueReset(Q_load_request);  // clear all requests
+
+			// all loads are connected - no loads shed
 			xSemaphoreTake(all_connected_sem, portMAX_DELAY);
-			all_connected = 1;  // for all toggle switch on, the respective loads are on
+			all_connected = 1;
 			xSemaphoreGive(all_connected_sem);
 
-			xQueueReset(Q_load_request);
-
 		} else {
-			IOWR_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE, IORD_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE) & ~(1 << 17));   // turn off maintenance mode LED
+			// turn off maintenance mode LED
+			IOWR_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE, IORD_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE) & ~(1 << 17));
+
 			red_led = IORD_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE);
 			green_led = IORD_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE);
 
-			if (xSemaphoreTake(load_mngr_idle_sem, (TickType_t) 2)){  // Load Manger is in IDLE, ie. everything is stable and good
+			// Load Manager is in IDLE, ie. everything is stable and good
+			if (xSemaphoreTake(load_mngr_idle_sem, (TickType_t) 2)){
+				// connect all loads
 				IOWR_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE, uiSwitchValue & 0x1F);
 
-				for (i = 4; i >= 0; i--){
-					IOWR_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE, green_led & ~(1 << i));
-					green_led &= ~(1 << i);
-				}
+				// turn off shed status LEDs - 0xE0 clears the least significant 5 bits.
+				IOWR_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE, IORD_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE & 0xE0));
+				// for (i = 4; i >= 0; i--){
+				// 	IOWR_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE, green_led & ~(1 << i));
+				// 	green_led &= ~(1 << i);
+				// }
 
 				continue;
+
+			// Load Manager is not in IDLE, could be stable or unstable
 			} else {
 
 				// turn off load if toggle switch is off for that load
@@ -417,32 +433,37 @@ void load_control_task(){
 					}
 				}
 
-				// Read request queue
+				// Read request queue from Load manager
 				if (uxQueueMessagesWaiting(Q_load_request) != 0){
-					xQueueReceive(Q_load_request, &req, 10);
+					xQueueReceive(Q_load_request, &req, (TickType_t) 5);
 
 					switch(req)
 					{
+					// shed lowest priority load
 					case DISCONNECT:
 						time_taken = xTaskGetTickCount() - start_time;
 
 						for (i = 0; i < 5; i++){
-							if(red_led & (1 << i)){
+							if(red_led & (1 << i)){  // if the load is on, shed that one
 								IOWR_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE, red_led & ~(1 << i));
 								IOWR_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE, green_led | (1 << i));
+
+								// not all loads are connected any more
+								// if(xSemaphoreTake(all_connected_sem, (TickType_t) 10)){
+								// 	all_connected = 0;
+								// 	xSemaphoreGive(all_connected_sem);
+								// }
+
 								break;
 							}
 						}
 
-						if(xSemaphoreTake(all_connected_sem, (TickType_t) 30)){
-							all_connected = 0;
-							xSemaphoreGive(all_connected_sem);
-						}
 						break;
 
+					// unshed highest priority load
 					case RECONNECT:
 						for (i = 4; i >= 0; i--){
-							if ((uiSwitchValue & (1 << i)) ^ (red_led & (1 << i))){
+							if ((uiSwitchValue & (1 << i)) ^ (red_led & (1 << i))){  // if toggle is on but load is off, unshed that load
 								IOWR_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE, red_led | (1 << i));
 								IOWR_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE, green_led & ~(1 << i));
 								break;
@@ -459,7 +480,7 @@ void load_control_task(){
 
 
 				// Check if all loads are connected
-				if(xSemaphoreTake(all_connected_sem, (TickType_t) 50)){
+				if(xSemaphoreTake(all_connected_sem, (TickType_t) 5)){
 					if (((IORD_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE) & 0x1F) ^ (uiSwitchValue & 0x1F)) == 0){
 						all_connected = 1;
 					} else {
@@ -473,7 +494,7 @@ void load_control_task(){
 
 		}
 
-		vTaskDelay(5);
+		// vTaskDelay(5);
 	}
 }
 
@@ -595,7 +616,7 @@ int main()
 	Q_freq_data = xQueueCreate( 100, sizeof(double) );
 	Q_keyb_data = xQueueCreate(5, sizeof(unsigned char));
 	Q_load_request = xQueueCreate(5, sizeof(Request));
-	timer = xTimerCreate("Timer0", 500, pdFALSE, NULL, timer_500ms_isr);
+	timer = xTimerCreate("Timer_500ms", 500, pdFALSE, NULL, timer_500ms_isr);
 
 	// Initialise semaphores
 	threshold_sem = xSemaphoreCreateBinary();
