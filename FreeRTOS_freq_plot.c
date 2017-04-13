@@ -319,6 +319,7 @@ void load_manager_task(){
 				shed_index = freq_index_new;
 				req = DISCONNECT;
 				xQueueSendToBack(Q_load_request, &req, 2);
+				xTimerReset(timer, 5);	
 				next_state = UNSTABLE;
 			} else {
 				next_state = IDLE;
@@ -353,6 +354,7 @@ void load_manager_task(){
 				timer_expired = 0;
 				req = DISCONNECT;
 				xQueueSendToBack(Q_load_request, &req, 2);
+				xTimerReset(timer, 5);
 				next_state = UNSTABLE;
 			} else {
 				next_state = UNSTABLE;
