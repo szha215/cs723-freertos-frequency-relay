@@ -317,7 +317,9 @@ void load_manager_task(){
 
 			if ((freq_local < freq_threshold_local) || (roc_local > roc_threshold_local)) {
 				shed_index = freq_index_new;
-				next_state = SHED;
+				req = DISCONNECT;
+				xQueueSendToBack(Q_load_request, &req, 2);
+				next_state = UNSTABLE;
 			} else {
 				next_state = IDLE;
 			}
@@ -349,7 +351,9 @@ void load_manager_task(){
 			} else if (timer_expired){
 				shed_index = freq_index_new;
 				timer_expired = 0;
-				next_state = SHED;
+				req = DISCONNECT;
+				xQueueSendToBack(Q_load_request, &req, 2);
+				next_state = UNSTABLE;
 			} else {
 				next_state = UNSTABLE;
 			}
