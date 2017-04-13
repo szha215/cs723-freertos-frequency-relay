@@ -52,7 +52,6 @@ TaskHandle_t load_ctrl_handle;
 TaskHandle_t load_mngr_handle;
 TaskHandle_t keyb_update_handle;
 TaskHandle_t freq_update_handle;
-TaskHandle_t idle_task_handle;
 TimerHandle_t timer;
 
 // Semaphores
@@ -81,7 +80,6 @@ double dfreq[100];
 int freq_index = 99;
 int freq_index_new = 98;
 TickType_t time_stamps[100];
-TickType_t start_time;
 int shed_index;
 TickType_t time_taken[5];
 TickType_t max_time = 0;
@@ -102,7 +100,7 @@ void freq_relay(){
 	#define SAMPLING_FREQ 16000.0
 	double temp = SAMPLING_FREQ/(double)IORD(FREQUENCY_ANALYSER_BASE, 0);
 
-	start_time = xTaskGetTickCountFromISR();
+	TickType_t start_time = xTaskGetTickCountFromISR();
 	xQueueSendToBackFromISR(Q_freq_data, &temp, pdFALSE);
 	xQueueSendToBackFromISR(Q_time_stamp, &start_time, pdFALSE);
 
@@ -543,10 +541,10 @@ void load_control_task(){
 
 				// Check if all loads are connected
 				if(xSemaphoreTake(all_connected_sem, (TickType_t) 5)){
-					if (((IORD_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE) & 0x1F) ^ (uiSwitchValue & 0x1F)) == 0){
-						all_connected = 1;
-					} else {
+					if (((IORD_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE) & 0x1F) ^ (uiSwitchValue & 0x1F))){
 						all_connected = 0;
+					} else {
+						all_connected = 1;
 					}
 
 					xSemaphoreGive(all_connected_sem);
@@ -683,14 +681,6 @@ void PRVGADraw_Task(void *pvParameters ){
 }
 
 
-// Idle LED flash to indicate that the system hasn't crashed
-void idle_task(){
-	while(1){
-		IOWR_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE, IORD_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE) ^ (1 << 7));
-		vTaskDelay(1000);
-	}
-}
-
 int main()
 {
 	// FreeRTOS initialisation
@@ -744,7 +734,6 @@ int main()
 	xTaskCreate(load_manager_task, "load_manager_task", configMINIMAL_STACK_SIZE, NULL, LOAD_MNGR_TASK_P, &load_mngr_handle);
 	xTaskCreate(keyboard_update_task, "keyboard_update_task", configMINIMAL_STACK_SIZE, NULL, KEYB_UPDATE_TASK_P, &keyb_update_handle);
 	xTaskCreate(freq_update_task, "freq_update_task", configMINIMAL_STACK_SIZE, NULL, FREQ_UPDATE_TASK_P, &freq_update_handle);
-	xTaskCreate(idle_task, "Idle", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY+1, &idle_task_handle);
 
 	IOWR_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE, 0);
 	IOWR_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE, 0);
