@@ -598,13 +598,13 @@ void PRVGADraw_Task(void *pvParameters ){
 	alt_up_char_buffer_string(char_buf, "-30", 9, 34);
 	alt_up_char_buffer_string(char_buf, "-60", 9, 36);
 
-	alt_up_char_buffer_string(char_buf, "Run time (HH:MM:SS.m)    = ", 12, 40);
+	alt_up_char_buffer_string(char_buf, "Run Time (HH:MM:SS.m)    = ", 12, 40);
 	alt_up_char_buffer_string(char_buf, "Frequency Threshold (Hz) =       (UP/DOWN arrow keys)", 12, 42);  // 40
 	alt_up_char_buffer_string(char_buf, "RoC Threshold (Hz/s)     =       (LEFT/RIGHT arrow keys)", 12, 44);
-	alt_up_char_buffer_string(char_buf, "Time taken to shed (ms)  = ", 12, 46);
-	alt_up_char_buffer_string(char_buf, "Max time to shed (ms)    = ", 12, 48);
-	alt_up_char_buffer_string(char_buf, "Min time to shed (ms)    = ", 12, 50);
-	alt_up_char_buffer_string(char_buf, "Avg time to shed (ms)    = ", 12, 52);
+	alt_up_char_buffer_string(char_buf, "Reaction Times (ms)      = ", 12, 46);
+	alt_up_char_buffer_string(char_buf, "Max Reaction Time (ms)   = ", 12, 48);
+	alt_up_char_buffer_string(char_buf, "Min Reaction Time (ms)   = ", 12, 50);
+	alt_up_char_buffer_string(char_buf, "Avg Reaction Time (ms)   = ", 12, 52);
 
 
 	int j = 0;
