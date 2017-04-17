@@ -104,8 +104,8 @@ void freq_relay(){
 	xQueueSendToBackFromISR(Q_freq_data, &temp, pdFALSE);
 	xQueueSendToBackFromISR(Q_time_stamp, &start_time, pdFALSE);
 
-	BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-	vTaskNotifyGiveFromISR(load_mngr_handle, &xHigherPriorityTaskWoken);
+//	BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+//	vTaskNotifyGiveFromISR(load_mngr_handle, &xHigherPriorityTaskWoken);
 	return;
 }
 
@@ -150,6 +150,9 @@ void ps2_isr(void* ps2_device, alt_u32 id){
 // timer_500ms_isr - Does nothing
 void timer_500ms_isr(xTimerHandle t_timer){
 	timer_expired = 1;
+
+	BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+	vTaskNotifyGiveFromISR(load_mngr_handle, &xHigherPriorityTaskWoken);
 }
 
 //update_ROC_and_frequency_task - Receives frequency and ROC from ISR and stores it
@@ -178,6 +181,8 @@ void freq_update_task()
 		freq_index = (++freq_index) % 100;  // point to the next data (oldest) to be overwritten
 		freq_index_new = (++freq_index_new) % 100;
 		xSemaphoreGive(freq_roc_sem);
+
+		xTaskNotifyGive(load_mngr_handle);
 	}
 }
 
@@ -304,16 +309,16 @@ void load_manager_task(){
 		case IDLE:
 			xSemaphoreGive(load_mngr_idle_sem);
 
-			if (xSemaphoreTake(freq_roc_sem, (TickType_t) 10)){
+//			if (xSemaphoreTake(freq_roc_sem, (TickType_t) 10)){
 				freq_local = freq[freq_index_new];
 				roc_local = fabs(dfreq[freq_index_new]);
-				xSemaphoreGive(freq_roc_sem);
-			}
-			if (xSemaphoreTake(threshold_sem, (TickType_t) 10)){
+//				xSemaphoreGive(freq_roc_sem);
+//			}
+//			if (xSemaphoreTake(threshold_sem, (TickType_t) 10)){
 				freq_threshold_local = freq_threshold;
 				roc_threshold_local = roc_threshold;
-				xSemaphoreGive(threshold_sem);
-			}
+//				xSemaphoreGive(threshold_sem);
+//			}
 
 			if ((freq_local < freq_threshold_local) || (roc_local > roc_threshold_local)) {
 				shed_index = freq_index_new;
@@ -421,7 +426,7 @@ void load_control_task(){
 	unsigned int red_led, green_led;
 	Request req;
 
-	const TickType_t task_period = 10;
+	const TickType_t task_period = 5;
 	TickType_t last_wake_time = xTaskGetTickCount();
 
 	while(1){
@@ -431,9 +436,16 @@ void load_control_task(){
 		// read the value of the switch and store to uiSwitchValue
 		uiSwitchValue = IORD_ALTERA_AVALON_PIO_DATA(SLIDE_SWITCH_BASE);
 
+		// Precise increment LED
+		if (precise_increment){
+			IOWR_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE, IORD_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE) | 1 << 16);
+		} else {
+			IOWR_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE, IORD_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE) & ~(1 << 16));
+		}
+
 		if (maintenance_mode){
 			// write the value of the switches to the red LEDs
-			IOWR_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE, (uiSwitchValue & 0x1F) | maintenance_mode << 17);
+			IOWR_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE, (uiSwitchValue & 0x1F) | maintenance_mode << 17 | precise_increment << 16);
 			IOWR_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE, 0);
 
 			xQueueReset(Q_load_request);  // clear all requests
@@ -619,7 +631,7 @@ void PRVGADraw_Task(void *pvParameters ){
 	char temp_buf[6];
 	unsigned int milisec;
 
-	const TickType_t task_period = 33;  // 60 Hz
+	const TickType_t task_period = 33;  // 30 Hz
 	TickType_t last_wake_time = xTaskGetTickCount();
 
 	while(1){
@@ -632,11 +644,18 @@ void PRVGADraw_Task(void *pvParameters ){
 
 		// Read thresholds and print to screen
 		xSemaphoreTake(threshold_sem, (TickType_t ) 10);
+
 		sprintf(temp_buf, "%2.1f", freq_threshold);
+		alt_up_pixel_buffer_dma_draw_hline(pixel_buf, 101, 590, (int)(FREQPLT_ORI_Y - FREQPLT_FREQ_RES * (freq_threshold - MIN_FREQ)), ((0x3ff << 10) + 0x100), 0);
 		alt_up_char_buffer_string(char_buf, temp_buf, 40, 42);
-		sprintf(temp_buf, "%2.1f", roc_threshold);
-		xSemaphoreGive(threshold_sem);
+
+		sprintf(temp_buf, "%2.1f ", roc_threshold);
+		alt_up_pixel_buffer_dma_draw_hline(pixel_buf, 101, 590, (int)(ROCPLT_ORI_Y - ROCPLT_ROC_RES * roc_threshold), ((0x3ff << 10) + 0x100), 0);
+		alt_up_pixel_buffer_dma_draw_hline(pixel_buf, 101, 590, (int)(ROCPLT_ORI_Y + ROCPLT_ROC_RES * roc_threshold), ((0x3ff << 10) + 0x100), 0);
 		alt_up_char_buffer_string(char_buf, temp_buf, 40, 44);
+
+		xSemaphoreGive(threshold_sem);
+
 
 		xSemaphoreTake(reaction_time_sem, 10);
 		sprintf(temp_buf, "%2d, %2d, %2d, %2d, %2d", time_taken[4], time_taken[3], time_taken[2], time_taken[1], time_taken[0]);
