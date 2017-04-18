@@ -394,7 +394,7 @@ void load_control_task(){
 		// read the value of the switch and store to uiSwitchValue
 		uiSwitchValue = IORD_ALTERA_AVALON_PIO_DATA(SLIDE_SWITCH_BASE);
 
-		// Precise increment LED
+		// LED representing the state of Precise Increment
 		if (precise_increment){
 			IOWR_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE, IORD_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE) | 1 << 16);
 		} else {
@@ -539,7 +539,6 @@ void PRVGADraw_Task(void *pvParameters ){
 		printf("can't find char buffer device\n");
 	}
 	alt_up_char_buffer_clear(char_buf);
-
 
 
 	//Set up plot axes
