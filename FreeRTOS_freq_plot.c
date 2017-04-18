@@ -55,11 +55,9 @@ TaskHandle_t freq_update_handle;
 TimerHandle_t timer;
 
 // Semaphores
-SemaphoreHandle_t threshold_sem;  // for r/w thresholds
-SemaphoreHandle_t all_connected_sem;  // for all_connected flag
-SemaphoreHandle_t load_mngr_idle_sem;  // task blocker 
 SemaphoreHandle_t freq_roc_sem;  // For freq[100], dfreq[100] and freq_index
-SemaphoreHandle_t reaction_time_sem;  // for time_taken[5], max_time, min_time, avg_time
+SemaphoreHandle_t threshold_sem;  // for r/w thresholds
+SemaphoreHandle_t load_mngr_idle_sem;  // task blocker 
 
 
 // global
@@ -104,8 +102,6 @@ void freq_relay(){
 	xQueueSendToBackFromISR(Q_freq_data, &temp, pdFALSE);
 	xQueueSendToBackFromISR(Q_time_stamp, &start_time, pdFALSE);
 
-//	BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-//	vTaskNotifyGiveFromISR(load_mngr_handle, &xHigherPriorityTaskWoken);
 	return;
 }
 
@@ -114,9 +110,6 @@ void button_isr(void* context, alt_u32 id){
 	if (IORD_ALTERA_AVALON_PIO_EDGE_CAP(PUSH_BUTTON_BASE) == 4){
 		// toggle
 		maintenance_mode ^= 1;
-		// set maintenance LED
-		// IOWR(RED_LEDS_BASE, 0, 0 | (IORD_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE) & 0x0FFFFFFF ) | maintenance_mode << 17);
-
 	} else if (IORD_ALTERA_AVALON_PIO_EDGE_CAP(PUSH_BUTTON_BASE) == 2){
 		precise_increment ^= 1;
 	}
@@ -131,7 +124,9 @@ void ps2_isr(void* ps2_device, alt_u32 id){
 	int status = 0;
 	unsigned char key = 0;
 	KB_CODE_TYPE decode_mode;
-	status = decode_scancode (ps2_device, &decode_mode , &key , &ascii) ;
+
+	status = decode_scancode(ps2_device, &decode_mode , &key , &ascii);
+
 	if ( status == 0 ) //success
 	{
 		// print out the result
@@ -169,8 +164,7 @@ void freq_update_task()
 		//calculate frequency RoC
 		if(freq_index == 0){
 			dfreq[0] = (freq[0]-freq[99]) * 2.0 * freq[0] * freq[99] / (freq[0]+freq[99]);
-		}
-		else{
+		} else {
 			dfreq[freq_index] = (freq[freq_index]-freq[freq_index-1]) * 2.0 * freq[freq_index]* freq[freq_index-1] / (freq[freq_index]+freq[freq_index-1]);
 		}
 
@@ -187,12 +181,11 @@ void freq_update_task()
 }
 
 
-
 // Keyboard_update_task - Retrieves keyboard data from queue and processes it.
 //		Updates frequency thresholds
 void keyboard_update_task(){
 	unsigned char key;
-	unsigned char key_pressed = 0;  // Only register key down, not key up
+	unsigned char key_pressed = 0;  // Only register key press, not key release
 
 	while(1){
 		xQueueReceive(Q_keyb_data, &key, portMAX_DELAY);  // Pops queue, blocks indefinitely if empty
@@ -291,11 +284,8 @@ void load_manager_task(){
 	State current_state = IDLE;
 	State next_state = IDLE;
 	Request req;
-	double freq_local, roc_local;
-	double freq_threshold_local, roc_threshold_local;
 
 	while(1){
-
 		ulTaskNotifyTake(pdFALSE, portMAX_DELAY);
 
 		// "asynchronous" "reset"
@@ -305,132 +295,100 @@ void load_manager_task(){
 			current_state = next_state;
 		}
 
-		switch(current_state){
-		case IDLE:
-			xSemaphoreGive(load_mngr_idle_sem);
+		// take frequency and threshold mutex'
+		if (xSemaphoreTake(freq_roc_sem, (TickType_t) 5)){
+			if (xSemaphoreTake(threshold_sem, (TickType_t) 5)){
 
-//			if (xSemaphoreTake(freq_roc_sem, (TickType_t) 10)){
-				freq_local = freq[freq_index_new];
-				roc_local = fabs(dfreq[freq_index_new]);
-//				xSemaphoreGive(freq_roc_sem);
-//			}
-//			if (xSemaphoreTake(threshold_sem, (TickType_t) 10)){
-				freq_threshold_local = freq_threshold;
-				roc_threshold_local = roc_threshold;
-//				xSemaphoreGive(threshold_sem);
-//			}
+				switch(current_state){
+				case IDLE:
+					xSemaphoreGive(load_mngr_idle_sem);
 
-			if ((freq_local < freq_threshold_local) || (roc_local > roc_threshold_local)) {
-				shed_index = freq_index_new;
-				req = DISCONNECT;
-				xQueueSendToBack(Q_load_request, &req, 2);
-				xTimerReset(timer, 5);	
-				next_state = UNSTABLE;
-			} else {
-				next_state = IDLE;
-			}
-			break;
+					if ((freq[freq_index_new] < freq_threshold) || (fabs(dfreq[freq_index_new]) > roc_threshold)) {
+						shed_index = freq_index_new;
 
-		case SHED:
-			req = DISCONNECT;
-			xQueueSendToBack(Q_load_request, &req, 2);
+						req = DISCONNECT;
+						xQueueSendToBack(Q_load_request, &req, 2);
 
-			next_state = UNSTABLE;
-			xTimerReset(timer, 5);
-			break;
+						xTimerReset(timer, 5);
 
-		case UNSTABLE:
-			if (xSemaphoreTake(freq_roc_sem, (TickType_t) 10)){
-				freq_local = freq[freq_index_new];
-				roc_local = fabs(dfreq[freq_index_new]);
-				xSemaphoreGive(freq_roc_sem);
-			}
-			if (xSemaphoreTake(threshold_sem, (TickType_t) 10)){
-				freq_threshold_local = freq_threshold;
-				roc_threshold_local = roc_threshold;
-				xSemaphoreGive(threshold_sem);
-			}
+						next_state = UNSTABLE;
+					} else {
+						next_state = IDLE;
+					}
+					break;
 
-			if ((freq_local > freq_threshold_local) && (roc_local < roc_threshold_local)){
-				xTimerReset(timer, 5);
-				next_state = STABLE;
-			} else if (timer_expired){
-				shed_index = freq_index_new;
-				timer_expired = 0;
-				req = DISCONNECT;
-				xQueueSendToBack(Q_load_request, &req, 2);
-				xTimerReset(timer, 5);
-				next_state = UNSTABLE;
-			} else {
-				next_state = UNSTABLE;
-			}
+				case UNSTABLE:
+					if ((freq[freq_index_new] > freq_threshold) && (fabs(dfreq[freq_index_new]) < roc_threshold)){
+						xTimerReset(timer, 5);
+						next_state = STABLE;
 
-			break;
+					} else if (timer_expired){
+						timer_expired = 0;
 
-		case STABLE:
-			if (xSemaphoreTake(freq_roc_sem, (TickType_t) 10)){
-				freq_local = freq[freq_index_new];
-				roc_local = fabs(dfreq[freq_index_new]);
-				xSemaphoreGive(freq_roc_sem);
-			}
-			if (xSemaphoreTake(threshold_sem, (TickType_t) 10)){
-				freq_threshold_local = freq_threshold;
-				roc_threshold_local = roc_threshold;
-				xSemaphoreGive(threshold_sem);
-			}
+						shed_index = freq_index_new;
 
-			if ((freq_local < freq_threshold) || (roc_local > roc_threshold_local)) {
-				xTimerReset(timer, 5);
-				next_state = UNSTABLE;
-			} else if (timer_expired){
-				timer_expired = 0;
-				next_state = RECONNECT;
-			} else {
-				next_state = STABLE;
-			}
+						req = DISCONNECT;
+						xQueueSendToBack(Q_load_request, &req, 2);
 
-			break;
+						xTimerReset(timer, 5);
+						next_state = UNSTABLE;
 
-		case RECONNECT:
-			req = RECONNECT;
-			xQueueSendToBack(Q_load_request, &req, 20);
+					} else {
+						next_state = UNSTABLE;
+					}
 
-			if (xSemaphoreTake(all_connected_sem, (TickType_t ) 10)){
-				if (all_connected){
-					next_state = IDLE;
-				} else {
-					xTimerReset(timer, 1);
-					next_state = STABLE;
+					break;
+
+				case STABLE:
+					if ((freq[freq_index_new] < freq_threshold) || fabs((dfreq[freq_index_new]) > roc_threshold)) {
+						xTimerReset(timer, 5);
+						next_state = UNSTABLE;
+
+					} else if (timer_expired){
+						timer_expired = 0;
+
+						req = RECONNECT;
+						xQueueSendToBack(Q_load_request, &req, 20);
+
+						if (all_connected){
+							next_state = IDLE;
+						} else {
+							xTimerReset(timer, 1);
+							next_state = STABLE;
+						}
+
+					} else {
+						next_state = STABLE;
+					}
+
+					break;
+
+				default:
+					printf("\n**** MANAGER: BAD STATE ****\n");
+					break;
 				}
 
-				xSemaphoreGive(all_connected_sem);
+				xSemaphoreGive(threshold_sem);
 			}
 
-			break;
-
-		default:
-			printf("\n****** WTF THE GOING ON ******\n");
-			break;
+			xSemaphoreGive(freq_roc_sem);
 		}
-
-//		vTaskDelay(5);
 	}
 }
 
 // Load control task
 // Actually turns on/off loads
 void load_control_task(){
-	int i;
-	int k;
+	int i, k;
 	unsigned int uiSwitchValue = 0;
 	unsigned int red_led, green_led;
 	Request req;
 
-	const TickType_t task_period = 10;
-	TickType_t last_wake_time = xTaskGetTickCount();
+	const TickType_t task_period = 5;
+	TickType_t last_wake_time;
 
 	while(1){
-
+		last_wake_time = xTaskGetTickCount();
 		vTaskDelayUntil(&last_wake_time, task_period);
 
 		// read the value of the switch and store to uiSwitchValue
@@ -460,9 +418,7 @@ void load_control_task(){
 			avg_time = 0;
 
 			// all loads are connected - no loads shed
-			xSemaphoreTake(all_connected_sem, portMAX_DELAY);
 			all_connected = 1;
-			xSemaphoreGive(all_connected_sem);
 
 		} else {
 			// turn off maintenance mode LED
@@ -484,98 +440,84 @@ void load_control_task(){
 				}
 
 				continue;
-
-			// Load Manager is not in IDLE, could be stable or unstable
-			} else {
-
-				// turn off load if toggle switch is off for that load
-				for (i = 0; i < 5; i++){
-					if ((uiSwitchValue & (1 << i)) ^ (1 << i)){  // a toggle was switched off
-						IOWR_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE, red_led & ~(1 << i));
-						IOWR_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE, green_led & ~(1 << i));
-						green_led = IORD_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE);
-					}
-				}
-
-				// Read request queue from Load manager
-				if (uxQueueMessagesWaiting(Q_load_request) != 0){
-					xQueueReceive(Q_load_request, &req, (TickType_t) 5);
-
-					switch(req)
-					{
-
-					// shed lowest priority load
-					case DISCONNECT:
-						for (i = 0; i < 5; i++){
-							if(red_led & (1 << i)){  // if the load is on, shed that one
-								IOWR_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE, red_led & ~(1 << i));
-								IOWR_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE, green_led | (1 << i));
-
-								//  update reaction time data
-								if (xSemaphoreTake(reaction_time_sem, 10)){
-									time_taken[k] = xTaskGetTickCount() - time_stamps[shed_index];
-
-									if(time_taken[k] < min_time) {
-										min_time = time_taken[k];
-									}
-
-									if(time_taken[k] > max_time) {
-										max_time = time_taken[k];
-									}
-
-									avg_time = 0;
-
-									for(i = 0; i < 5; i++) {
-										avg_time += time_taken[i];
-									}
-
-									avg_time /= 5;
-
-									xSemaphoreGive(reaction_time_sem);
-									k = (++k) % 5;
-								}
-
-								break;
-							}
-						}
-
-						break;
-
-					// unshed highest priority load
-					case RECONNECT:
-						for (i = 4; i >= 0; i--){
-							if ((uiSwitchValue & (1 << i)) ^ (red_led & (1 << i))){  // if toggle is on but load is off, unshed that load
-								IOWR_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE, red_led | (1 << i));
-								IOWR_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE, green_led & ~(1 << i));
-								break;
-							}
-						}
-
-						break;
-
-					default:
-						printf("SUMTING WONG\n");
-						break;
-					}
-				}
-
-
-				// Check if all loads are connected
-				if(xSemaphoreTake(all_connected_sem, (TickType_t) 5)){
-					if (((IORD_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE) & 0x1F) ^ (uiSwitchValue & 0x1F))){
-						all_connected = 0;
-					} else {
-						all_connected = 1;
-					}
-
-					xSemaphoreGive(all_connected_sem);
-				}
-
 			}
 
-		}
 
-//		 vTaskDelay(5);
+			// Load Manager is not in IDLE, could be stable or unstable
+
+			// turn off load if toggle switch is off for that load
+			for (i = 0; i < 5; i++){
+				if ((uiSwitchValue & (1 << i)) ^ (1 << i)){  // a toggle was switched off
+					IOWR_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE, red_led & ~(1 << i));
+					IOWR_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE, green_led & ~(1 << i));
+					green_led = IORD_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE);
+				}
+			}
+
+			// Read request queue from Load manager
+			if (uxQueueMessagesWaiting(Q_load_request) != 0){
+				xQueueReceive(Q_load_request, &req, (TickType_t) 5);
+
+				switch(req)
+				{
+
+				// shed lowest priority load
+				case DISCONNECT:
+					for (i = 0; i < 5; i++){
+						if(red_led & (1 << i)){  // if the load is on, shed that one
+							IOWR_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE, red_led & ~(1 << i));
+							IOWR_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE, green_led | (1 << i));
+
+							//  update reaction time data
+							time_taken[k] = xTaskGetTickCount() - time_stamps[shed_index];
+
+							if(time_taken[k] < min_time) {
+								min_time = time_taken[k];
+							}
+
+							if(time_taken[k] > max_time) {
+								max_time = time_taken[k];
+							}
+
+							avg_time = 0;
+							for(i = 0; i < 5; i++) {
+								avg_time += time_taken[i];
+							}
+							avg_time /= 5;
+
+							k = (++k) % 5;
+							break;
+						}
+					}
+
+					break;
+
+				// unshed highest priority load
+				case RECONNECT:
+					for (i = 4; i >= 0; i--){
+						if ((uiSwitchValue & (1 << i)) ^ (red_led & (1 << i))){  // if toggle is on but load is off, unshed that load
+							IOWR_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE, red_led | (1 << i));
+							IOWR_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE, green_led & ~(1 << i));
+							break;
+						}
+					}
+
+					break;
+
+				default:
+					printf("\n**** CONTROL: BAD REQUEST ****\n");
+					break;
+				}
+			}
+
+
+			// Check if all loads are connected
+			if (((IORD_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE) & 0x1F) ^ (uiSwitchValue & 0x1F))){
+				all_connected = 0;
+			} else {
+				all_connected = 1;
+			}
+		}
 	}
 }
 
@@ -620,7 +562,7 @@ void PRVGADraw_Task(void *pvParameters ){
 	alt_up_char_buffer_string(char_buf, "-60", 9, 36);
 
 	alt_up_char_buffer_string(char_buf, "Run Time (HH:MM:SS.m)    = ", 12, 40);
-	alt_up_char_buffer_string(char_buf, "Frequency Threshold (Hz) =       (UP/DOWN arrow keys)", 12, 42);  // 40
+	alt_up_char_buffer_string(char_buf, "Frequency Threshold (Hz) =       (UP/DOWN arrow keys)", 12, 42);
 	alt_up_char_buffer_string(char_buf, "RoC Threshold (Hz/s)     =       (LEFT/RIGHT arrow keys)", 12, 44);
 	alt_up_char_buffer_string(char_buf, "Reaction Times (ms)      = ", 12, 46);
 	alt_up_char_buffer_string(char_buf, "Max Reaction Time (ms)   = ", 12, 48);
@@ -635,55 +577,46 @@ void PRVGADraw_Task(void *pvParameters ){
 	unsigned int milisec;
 
 	const TickType_t task_period = 33;  // 30 Hz
-	TickType_t last_wake_time = xTaskGetTickCount();
+	TickType_t last_wake_time;
 
 	while(1){
-
+		last_wake_time = xTaskGetTickCount();
 		vTaskDelayUntil(&last_wake_time, task_period);
+
 		milisec = xTaskGetTickCount();
 
 		sprintf(temp_buf, "%02d:%02d:%02d.%1d", (milisec/3600000) % 24, (milisec/60000) % 60, (milisec/1000) % 60, (milisec/100) % 10);
 		alt_up_char_buffer_string(char_buf, temp_buf, 40, 40);
 
 		// Read thresholds and print to screen
-//		xSemaphoreTake(threshold_sem, (TickType_t ) 10);
-
 		sprintf(temp_buf, "%2.1f", freq_threshold);
-		if (freq_threshold > 45.0 && freq_threshold < 52.0){
-			alt_up_pixel_buffer_dma_draw_hline(pixel_buf, 101, 590, (int)(FREQPLT_ORI_Y - FREQPLT_FREQ_RES * (freq_threshold - MIN_FREQ)), ((0x3ff << 10) + 0x100), 0);
-		}
 		alt_up_char_buffer_string(char_buf, temp_buf, 40, 42);
-
 		sprintf(temp_buf, "%2.1f ", roc_threshold);
-		if (roc_threshold < 60.0){
-			alt_up_pixel_buffer_dma_draw_hline(pixel_buf, 101, 590, (int)(ROCPLT_ORI_Y - ROCPLT_ROC_RES * roc_threshold), ((0x3ff << 10) + 0x100), 0);
-			alt_up_pixel_buffer_dma_draw_hline(pixel_buf, 101, 590, (int)(ROCPLT_ORI_Y + ROCPLT_ROC_RES * roc_threshold), ((0x3ff << 10) + 0x100), 0);
-		}
 		alt_up_char_buffer_string(char_buf, temp_buf, 40, 44);
 
-//		xSemaphoreGive(threshold_sem);
-
-
-		xSemaphoreTake(reaction_time_sem, 10);
 		sprintf(temp_buf, "%2d, %2d, %2d, %2d, %2d", time_taken[4], time_taken[3], time_taken[2], time_taken[1], time_taken[0]);
 		alt_up_char_buffer_string(char_buf, temp_buf, 40, 46);
-
 		sprintf(temp_buf, "%2d", max_time);
 		alt_up_char_buffer_string(char_buf, temp_buf, 40, 48);
-
 		sprintf(temp_buf, "%2d", min_time);
 		alt_up_char_buffer_string(char_buf, temp_buf, 40, 50);
-
 		sprintf(temp_buf, "%2d", avg_time);
 		alt_up_char_buffer_string(char_buf, temp_buf, 40, 52);
-		xSemaphoreGive(reaction_time_sem);
-
 
 		//clear old graph to draw new graph
 		alt_up_pixel_buffer_dma_draw_box(pixel_buf, 101, 0, 639, 199, 0, 0);
 		alt_up_pixel_buffer_dma_draw_box(pixel_buf, 101, 201, 639, 299, 0, 0);
 
-//		xSemaphoreTake(freq_roc_sem, portMAX_DELAY);
+		// draw threshold lines
+		if (freq_threshold > 45.0 && freq_threshold < 52.0){
+			alt_up_pixel_buffer_dma_draw_hline(pixel_buf, 101, 590, (int)(FREQPLT_ORI_Y - FREQPLT_FREQ_RES * (freq_threshold - MIN_FREQ)), ((0x100 << 20) + (0x3ff << 10) + 0x100), 0);
+		}
+
+		if (roc_threshold < 60.0){
+			alt_up_pixel_buffer_dma_draw_hline(pixel_buf, 101, 590, (int)(ROCPLT_ORI_Y - ROCPLT_ROC_RES * roc_threshold), ((0x100 << 20) + (0x3ff << 10) + 0x100), 0);
+			alt_up_pixel_buffer_dma_draw_hline(pixel_buf, 101, 590, (int)(ROCPLT_ORI_Y + ROCPLT_ROC_RES * roc_threshold), ((0x100 << 20) + (0x3ff << 10) + 0x100), 0);
+		}
+
 		for(j=0;j<99;++j){ //i here points to the oldest data, j loops through all the data to be drawn on VGA
 			if (((int)(freq[(freq_index+j)%100]) > MIN_FREQ) && ((int)(freq[(freq_index+j+1)%100]) > MIN_FREQ)){
 				//Calculate coordinates of the two data points to draw a line in between
@@ -706,9 +639,6 @@ void PRVGADraw_Task(void *pvParameters ){
 				alt_up_pixel_buffer_dma_draw_line(pixel_buf, line_roc.x1, line_roc.y1, line_roc.x2, line_roc.y2, 0x3ff << 0, 0);
 			}
 		}
-//		xSemaphoreGive(freq_roc_sem);
-//		vTaskDelay(10);
-
 	}
 }
 
@@ -724,17 +654,13 @@ int main()
 	timer = xTimerCreate("Timer_500ms", 500, pdFALSE, NULL, timer_500ms_isr);
 
 	// Initialise semaphores
-	threshold_sem = xSemaphoreCreateMutex();
-	all_connected_sem = xSemaphoreCreateMutex();
-	load_mngr_idle_sem = xSemaphoreCreateBinary();
 	freq_roc_sem = xSemaphoreCreateMutex();
-	reaction_time_sem = xSemaphoreCreateMutex();
+	threshold_sem = xSemaphoreCreateMutex();
+	load_mngr_idle_sem = xSemaphoreCreateBinary();
 
-	xSemaphoreGive(threshold_sem);
-	xSemaphoreGive(all_connected_sem);
-	xSemaphoreGive(load_mngr_idle_sem);
 	xSemaphoreGive(freq_roc_sem);
-	xSemaphoreGive(reaction_time_sem);
+	xSemaphoreGive(threshold_sem);
+	xSemaphoreGive(load_mngr_idle_sem);
 
 	// Hardware initialisation
 	// Initialise ps2 device
@@ -760,7 +686,6 @@ int main()
 //	#define FREQ_UPDATE_TASK_P  (tskIDLE_PRIORITY+5)
 
 	// Tasks
-
 	xTaskCreate(PRVGADraw_Task, "DrawTsk", configMINIMAL_STACK_SIZE, NULL, PRVGADraw_Task_P, &PRVGADraw);
 	xTaskCreate(load_control_task, "load_control_task", configMINIMAL_STACK_SIZE, NULL, LOAD_CTRL_TASK_P, &load_ctrl_handle);
 	xTaskCreate(load_manager_task, "load_manager_task", configMINIMAL_STACK_SIZE, NULL, LOAD_MNGR_TASK_P, &load_mngr_handle);
