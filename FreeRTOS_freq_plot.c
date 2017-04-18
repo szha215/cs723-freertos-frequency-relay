@@ -79,9 +79,9 @@ double freq[100];
 double dfreq[100];
 int freq_index = 99;
 int freq_index_new = 98;
-TickType_t time_stamps[100];
+TickType_t time_stamps[100] = {0};
 int shed_index;
-TickType_t time_taken[5];
+TickType_t time_taken[5] = {0};
 TickType_t max_time = 0;
 TickType_t min_time = 99;
 TickType_t avg_time = 0;
@@ -421,12 +421,12 @@ void load_manager_task(){
 // Actually turns on/off loads
 void load_control_task(){
 	int i;
-	int k = 0;
+	int k;
 	unsigned int uiSwitchValue = 0;
 	unsigned int red_led, green_led;
 	Request req;
 
-	const TickType_t task_period = 5;
+	const TickType_t task_period = 10;
 	TickType_t last_wake_time = xTaskGetTickCount();
 
 	while(1){
@@ -449,6 +449,15 @@ void load_control_task(){
 			IOWR_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE, 0);
 
 			xQueueReset(Q_load_request);  // clear all requests
+
+			// clear records in maintenance mode
+			for (i = 0; i < 5; i++){
+				time_taken[i] = 0;
+			}
+
+			max_time = 0;
+			min_time = 99;
+			avg_time = 0;
 
 			// all loads are connected - no loads shed
 			xSemaphoreTake(all_connected_sem, portMAX_DELAY);
@@ -494,43 +503,37 @@ void load_control_task(){
 
 					switch(req)
 					{
+
 					// shed lowest priority load
 					case DISCONNECT:
-
-
 						for (i = 0; i < 5; i++){
 							if(red_led & (1 << i)){  // if the load is on, shed that one
 								IOWR_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE, red_led & ~(1 << i));
 								IOWR_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE, green_led | (1 << i));
 
-								// not all loads are connected any more
-								// if(xSemaphoreTake(all_connected_sem, (TickType_t) 10)){
-								// 	all_connected = 0;
-								// 	xSemaphoreGive(all_connected_sem);
-								// }
-
 								//  update reaction time data
-								xSemaphoreTake(reaction_time_sem, 10);
-								time_taken[k] = xTaskGetTickCount() - time_stamps[shed_index];
+								if (xSemaphoreTake(reaction_time_sem, 10)){
+									time_taken[k] = xTaskGetTickCount() - time_stamps[shed_index];
 
-								if(time_taken[k] < min_time) {
-									min_time = time_taken[k];
+									if(time_taken[k] < min_time) {
+										min_time = time_taken[k];
+									}
+
+									if(time_taken[k] > max_time) {
+										max_time = time_taken[k];
+									}
+
+									avg_time = 0;
+
+									for(i = 0; i < 5; i++) {
+										avg_time += time_taken[i];
+									}
+
+									avg_time /= 5;
+
+									xSemaphoreGive(reaction_time_sem);
+									k = (++k) % 5;
 								}
-
-								if(time_taken[k] > max_time) {
-									max_time = time_taken[k];
-								}
-
-								avg_time = 0;
-
-								for(i = 0; i < 5; i++) {
-									avg_time += time_taken[i];
-								}
-
-								avg_time /= 5;
-
-								xSemaphoreGive(reaction_time_sem);
-								k = (++k) % 5;
 
 								break;
 							}
@@ -643,18 +646,22 @@ void PRVGADraw_Task(void *pvParameters ){
 		alt_up_char_buffer_string(char_buf, temp_buf, 40, 40);
 
 		// Read thresholds and print to screen
-		xSemaphoreTake(threshold_sem, (TickType_t ) 10);
+//		xSemaphoreTake(threshold_sem, (TickType_t ) 10);
 
 		sprintf(temp_buf, "%2.1f", freq_threshold);
-		alt_up_pixel_buffer_dma_draw_hline(pixel_buf, 101, 590, (int)(FREQPLT_ORI_Y - FREQPLT_FREQ_RES * (freq_threshold - MIN_FREQ)), ((0x3ff << 10) + 0x100), 0);
+		if (freq_threshold > 45.0 && freq_threshold < 52.0){
+			alt_up_pixel_buffer_dma_draw_hline(pixel_buf, 101, 590, (int)(FREQPLT_ORI_Y - FREQPLT_FREQ_RES * (freq_threshold - MIN_FREQ)), ((0x3ff << 10) + 0x100), 0);
+		}
 		alt_up_char_buffer_string(char_buf, temp_buf, 40, 42);
 
 		sprintf(temp_buf, "%2.1f ", roc_threshold);
-		alt_up_pixel_buffer_dma_draw_hline(pixel_buf, 101, 590, (int)(ROCPLT_ORI_Y - ROCPLT_ROC_RES * roc_threshold), ((0x3ff << 10) + 0x100), 0);
-		alt_up_pixel_buffer_dma_draw_hline(pixel_buf, 101, 590, (int)(ROCPLT_ORI_Y + ROCPLT_ROC_RES * roc_threshold), ((0x3ff << 10) + 0x100), 0);
+		if (roc_threshold < 60.0){
+			alt_up_pixel_buffer_dma_draw_hline(pixel_buf, 101, 590, (int)(ROCPLT_ORI_Y - ROCPLT_ROC_RES * roc_threshold), ((0x3ff << 10) + 0x100), 0);
+			alt_up_pixel_buffer_dma_draw_hline(pixel_buf, 101, 590, (int)(ROCPLT_ORI_Y + ROCPLT_ROC_RES * roc_threshold), ((0x3ff << 10) + 0x100), 0);
+		}
 		alt_up_char_buffer_string(char_buf, temp_buf, 40, 44);
 
-		xSemaphoreGive(threshold_sem);
+//		xSemaphoreGive(threshold_sem);
 
 
 		xSemaphoreTake(reaction_time_sem, 10);
@@ -717,11 +724,11 @@ int main()
 	timer = xTimerCreate("Timer_500ms", 500, pdFALSE, NULL, timer_500ms_isr);
 
 	// Initialise semaphores
-	threshold_sem = xSemaphoreCreateBinary();
-	all_connected_sem = xSemaphoreCreateBinary();
+	threshold_sem = xSemaphoreCreateMutex();
+	all_connected_sem = xSemaphoreCreateMutex();
 	load_mngr_idle_sem = xSemaphoreCreateBinary();
-	freq_roc_sem = xSemaphoreCreateBinary();
-	reaction_time_sem = xSemaphoreCreateBinary();
+	freq_roc_sem = xSemaphoreCreateMutex();
+	reaction_time_sem = xSemaphoreCreateMutex();
 
 	xSemaphoreGive(threshold_sem);
 	xSemaphoreGive(all_connected_sem);
